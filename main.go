@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"strconv"
@@ -13,9 +14,91 @@ import (
 	"time"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
+	"github.com/gosimple/slug"
+	yaml "gopkg.in/yaml.v2"
 )
 
-func onMessageReceived(client MQTT.Client, message MQTT.Message) {
+type Config struct {
+	Thermometers []struct {
+		Name     string
+		Topic    string
+		Humidity bool
+	}
+	Lights []struct {
+		Name  string
+		Topic string
+	}
+}
+
+var config Config
+
+type sensorInfo struct {
+	StateTopic string `json:"state_topic"`
+	Name       string `json:"name"`
+	Unit       string `json:"unit_of_measurement"`
+}
+
+func updateHomeAssistantThermometers(client MQTT.Client, config Config) {
+	for _, thermometer := range config.Thermometers {
+		slug := slug.Make(thermometer.Name)
+		hassSlug := strings.Replace(slug, "-", "_", -1)
+		tempInfo := sensorInfo{
+			StateTopic: "thermometers/" + slug + "/measurements/temperature/value",
+			Name:       thermometer.Name + " (temperature)",
+			Unit:       "°C",
+		}
+		tempJSON, _ := json.Marshal(&tempInfo)
+		client.Publish("homeassistant/sensor/"+hassSlug+"_temperature/config", 0, false, tempJSON)
+		if thermometer.Humidity {
+			tempInfo := sensorInfo{
+				StateTopic: "thermometers/" + slug + "/measurements/humidity/value",
+				Name:       thermometer.Name + " (humidity)",
+				Unit:       "%",
+			}
+			tempJSON, _ := json.Marshal(&tempInfo)
+			client.Publish("homeassistant/sensor/"+hassSlug+"_humidity/config", 0, false, tempJSON)
+		}
+	}
+}
+
+func updateThermometers(client MQTT.Client, config Config) {
+	for _, thermometer := range config.Thermometers {
+		slug := slug.Make(thermometer.Name)
+		client.Publish("thermometers/"+slug+"/name", 0, true, []byte(thermometer.Name))
+		client.Publish("thermometers/"+slug+"/measurements/temperature/unit", 0, true, []byte("celsius"))
+		if thermometer.Humidity {
+			client.Publish("thermometers/"+slug+"/measurements/humidity/unit", 0, true, []byte("percent"))
+		}
+	}
+}
+
+func onConfig(client MQTT.Client, message MQTT.Message) {
+	var newConfig Config
+	err := yaml.Unmarshal(message.Payload(), &newConfig)
+	if err != nil {
+		log.Printf("Error parsing config: %v", err)
+	}
+	fmt.Println("Got config update")
+
+	updateHomeAssistantThermometers(client, newConfig)
+	updateThermometers(client, newConfig)
+
+	config = newConfig
+}
+
+func handleThermometer(client MQTT.Client, topic string, values map[string]string) {
+	for _, thermometer := range config.Thermometers {
+		if thermometer.Topic == topic {
+			slug := slug.Make(thermometer.Name)
+			client.Publish("thermometers/"+slug+"/measurements/temperature/value", 0, true, []byte(values["temp"]))
+			if thermometer.Humidity {
+				client.Publish("thermometers/"+slug+"/measurements/humidity/value", 0, true, []byte(values["humidity"]))
+			}
+		}
+	}
+}
+
+func handleRaw(client MQTT.Client, message MQTT.Message) {
 	values := make(map[string]string)
 	for _, kvpair := range strings.Split(string(message.Payload()), ";") {
 		kv := strings.SplitN(kvpair, ":", 2)
@@ -62,6 +145,7 @@ func onMessageReceived(client MQTT.Client, message MQTT.Message) {
 		if token := client.Publish(topic, byte(0), false, payload); token.Wait() && token.Error() != nil {
 			fmt.Printf("PUBLISH ERROR: %v", token.Error())
 		}
+		handleThermometer(client, topic, values)
 	}
 }
 
@@ -98,9 +182,13 @@ func main() {
 	}
 	connOpts.AddBroker(*server)
 	connOpts.OnConnect = func(c MQTT.Client) {
-		if token := c.Subscribe("tellstick/raw", 0, onMessageReceived); token.Wait() && token.Error() != nil {
+		if token := c.Subscribe("house/config", 0, onConfig); token.Wait() && token.Error() != nil {
 			panic(token.Error())
 		}
+		if token := c.Subscribe("tellstick/raw", 0, handleRaw); token.Wait() && token.Error() != nil {
+			panic(token.Error())
+		}
+
 	}
 
 	client := MQTT.NewClient(connOpts)
