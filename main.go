@@ -24,6 +24,10 @@ type Config struct {
 		Topic    string
 		Humidity bool
 	}
+	Buttons []struct {
+		Name  string
+		Topic string
+	}
 	Lights []struct {
 		Name  string
 		Topic string
@@ -38,13 +42,72 @@ type sensorInfo struct {
 	Unit       string `json:"unit_of_measurement"`
 }
 
+type binarySensorInfo struct {
+	Name       string `json:"name"`
+	StateTopic string `json:"state_topic"`
+}
+
+type lightInfo struct {
+	CommandTopic string `json:"command_topic"`
+	Name         string `json:"name"`
+	StateTopic   string `json:"state_topic"`
+}
+
+type changeLightReq struct {
+	ID    string
+	Value bool
+}
+
+var changeLight = make(chan changeLightReq)
+
+func lightMonitor(client MQTT.Client) {
+	states := make(map[string]bool)
+
+	t := time.NewTicker(30 * time.Second)
+	for {
+		select {
+		case m := <-changeLight:
+			fmt.Printf("Change Light: %s -> %v\n", m.ID, m.Value)
+			for _, light := range config.Lights {
+				slug := slug.Make(light.Name)
+				var payload []byte
+				if m.Value {
+					payload = []byte("ON")
+				} else {
+					payload = []byte("OFF")
+				}
+				if m.ID == slug {
+					fmt.Printf("Posting on topic %s for %s\n", light.Topic, light.Name)
+					states[light.Topic] = m.Value
+					client.Publish(light.Topic, 0, false, payload)
+					client.Publish("lights/"+slug+"/state", 0, true, payload)
+					break
+				}
+			}
+		case <-t.C:
+			// Pick a random every iteration
+			for topic, value := range states {
+				var payload []byte
+				if value {
+					payload = []byte("ON")
+				} else {
+					payload = []byte("OFF")
+				}
+				client.Publish(topic, 0, false, payload)
+				break
+			}
+		}
+
+	}
+}
+
 func updateHomeAssistantThermometers(client MQTT.Client, config Config) {
 	for _, thermometer := range config.Thermometers {
 		slug := slug.Make(thermometer.Name)
 		hassSlug := strings.Replace(slug, "-", "_", -1)
 		tempInfo := sensorInfo{
 			StateTopic: "thermometers/" + slug + "/measurements/temperature/value",
-			Name:       thermometer.Name + " (temperature)",
+			Name:       thermometer.Name,
 			Unit:       "°C",
 		}
 		tempJSON, _ := json.Marshal(&tempInfo)
@@ -52,12 +115,39 @@ func updateHomeAssistantThermometers(client MQTT.Client, config Config) {
 		if thermometer.Humidity {
 			tempInfo := sensorInfo{
 				StateTopic: "thermometers/" + slug + "/measurements/humidity/value",
-				Name:       thermometer.Name + " (humidity)",
+				Name:       thermometer.Name,
 				Unit:       "%",
 			}
 			tempJSON, _ := json.Marshal(&tempInfo)
 			client.Publish("homeassistant/sensor/"+hassSlug+"_humidity/config", 0, false, tempJSON)
 		}
+	}
+}
+
+func updateHomeAssistantButtons(client MQTT.Client, config Config) {
+	for _, button := range config.Buttons {
+		slug := slug.Make(button.Name)
+		hassSlug := strings.Replace(slug, "-", "_", -1)
+		info := binarySensorInfo{
+			Name:       button.Name,
+			StateTopic: "buttons/" + slug + "/value",
+		}
+		j, _ := json.Marshal(&info)
+		client.Publish("homeassistant/binary_sensor/"+hassSlug+"/config", 0, false, j)
+	}
+}
+
+func updateHomeAssistantLights(client MQTT.Client, config Config) {
+	for _, light := range config.Lights {
+		slug := slug.Make(light.Name)
+		hassSlug := strings.Replace(slug, "-", "_", -1)
+		info := lightInfo{
+			CommandTopic: "lights/" + slug + "/command",
+			Name:         light.Name,
+			StateTopic:   "lights/" + slug + "/state",
+		}
+		j, _ := json.Marshal(&info)
+		client.Publish("homeassistant/light/"+hassSlug+"/config", 0, false, j)
 	}
 }
 
@@ -72,6 +162,35 @@ func updateThermometers(client MQTT.Client, config Config) {
 	}
 }
 
+func updateButtons(client MQTT.Client, config Config) {
+	for _, button := range config.Buttons {
+		slug := slug.Make(button.Name)
+		client.Publish("buttons/"+slug+"/name", 0, true, []byte(button.Name))
+	}
+}
+
+func updateLights(client MQTT.Client, config Config) {
+	for _, light := range config.Lights {
+		slug := slug.Make(light.Name)
+		client.Publish("lights/"+slug+"/name", 0, true, []byte(light.Name))
+	}
+}
+
+func onLight(client MQTT.Client, message MQTT.Message) {
+	parts := strings.SplitN(message.Topic(), "/", 3)
+	if string(message.Payload()) == "ON" {
+		changeLight <- changeLightReq{
+			ID:    parts[1],
+			Value: true,
+		}
+	} else if string(message.Payload()) == "OFF" {
+		changeLight <- changeLightReq{
+			ID:    parts[1],
+			Value: false,
+		}
+	}
+}
+
 func onConfig(client MQTT.Client, message MQTT.Message) {
 	var newConfig Config
 	err := yaml.Unmarshal(message.Payload(), &newConfig)
@@ -81,7 +200,11 @@ func onConfig(client MQTT.Client, message MQTT.Message) {
 	fmt.Println("Got config update")
 
 	updateHomeAssistantThermometers(client, newConfig)
+	updateHomeAssistantButtons(client, newConfig)
+	updateHomeAssistantLights(client, newConfig)
 	updateThermometers(client, newConfig)
+	updateButtons(client, newConfig)
+	updateLights(client, newConfig)
 
 	config = newConfig
 }
@@ -93,6 +216,19 @@ func handleThermometer(client MQTT.Client, topic string, values map[string]strin
 			client.Publish("thermometers/"+slug+"/measurements/temperature/value", 0, true, []byte(values["temp"]))
 			if thermometer.Humidity {
 				client.Publish("thermometers/"+slug+"/measurements/humidity/value", 0, true, []byte(values["humidity"]))
+			}
+		}
+	}
+}
+
+func handleButtons(client MQTT.Client, topic string, values map[string]string) {
+	for _, button := range config.Buttons {
+		if button.Topic == topic {
+			slug := slug.Make(button.Name)
+			if values["method"] == "turnon" {
+				client.Publish("buttons/"+slug+"/value", 0, true, []byte("ON"))
+			} else if values["method"] == "turnoff" {
+				client.Publish("buttons/"+slug+"/value", 0, true, []byte("OFF"))
 			}
 		}
 	}
@@ -146,6 +282,7 @@ func handleRaw(client MQTT.Client, message MQTT.Message) {
 			fmt.Printf("PUBLISH ERROR: %v", token.Error())
 		}
 		handleThermometer(client, topic, values)
+		handleButtons(client, topic, values)
 	}
 }
 
@@ -188,7 +325,9 @@ func main() {
 		if token := c.Subscribe("tellstick/raw", 0, handleRaw); token.Wait() && token.Error() != nil {
 			panic(token.Error())
 		}
-
+		if token := c.Subscribe("lights/+/command", 0, onLight); token.Wait() && token.Error() != nil {
+			panic(token.Error())
+		}
 	}
 
 	client := MQTT.NewClient(connOpts)
@@ -197,6 +336,8 @@ func main() {
 	} else {
 		fmt.Printf("Connected to %s\n", *server)
 	}
+
+	go lightMonitor(client)
 
 	for {
 		time.Sleep(1 * time.Second)
