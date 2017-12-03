@@ -106,7 +106,7 @@ func updateHomeAssistantThermometers(client MQTT.Client, config Config) {
 		slug := slug.Make(thermometer.Name)
 		hassSlug := strings.Replace(slug, "-", "_", -1)
 		tempInfo := sensorInfo{
-			StateTopic: "thermometers/" + slug + "/measurements/temperature/value",
+			StateTopic: "thermometers/" + slug + "/value",
 			Name:       thermometer.Name,
 			Unit:       "°C",
 		}
@@ -114,8 +114,8 @@ func updateHomeAssistantThermometers(client MQTT.Client, config Config) {
 		client.Publish("homeassistant/sensor/"+hassSlug+"_temperature/config", 0, false, tempJSON)
 		if thermometer.Humidity {
 			tempInfo := sensorInfo{
-				StateTopic: "thermometers/" + slug + "/measurements/humidity/value",
-				Name:       thermometer.Name,
+				StateTopic: "hygrometers/" + slug + "/value",
+				Name:       thermometer.Name + " H",
 				Unit:       "%",
 			}
 			tempJSON, _ := json.Marshal(&tempInfo)
@@ -155,9 +155,10 @@ func updateThermometers(client MQTT.Client, config Config) {
 	for _, thermometer := range config.Thermometers {
 		slug := slug.Make(thermometer.Name)
 		client.Publish("thermometers/"+slug+"/name", 0, true, []byte(thermometer.Name))
-		client.Publish("thermometers/"+slug+"/measurements/temperature/unit", 0, true, []byte("celsius"))
+		client.Publish("thermometers/"+slug+"/unit", 0, true, []byte("celsius"))
 		if thermometer.Humidity {
-			client.Publish("thermometers/"+slug+"/measurements/humidity/unit", 0, true, []byte("percent"))
+			client.Publish("hygrometers/"+slug+"/name", 0, true, []byte(thermometer.Name))
+			client.Publish("hygrometers/"+slug+"/unit", 0, true, []byte("percent"))
 		}
 	}
 }
@@ -213,9 +214,9 @@ func handleThermometer(client MQTT.Client, topic string, values map[string]strin
 	for _, thermometer := range config.Thermometers {
 		if thermometer.Topic == topic {
 			slug := slug.Make(thermometer.Name)
-			client.Publish("thermometers/"+slug+"/measurements/temperature/value", 0, true, []byte(values["temp"]))
+			client.Publish("thermometers/"+slug+"/value", 0, true, []byte(values["temp"]))
 			if thermometer.Humidity {
-				client.Publish("thermometers/"+slug+"/measurements/humidity/value", 0, true, []byte(values["humidity"]))
+				client.Publish("hygrometers/"+slug+"/value", 0, true, []byte(values["humidity"]))
 			}
 		}
 	}
