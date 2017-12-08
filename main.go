@@ -59,6 +59,19 @@ type changeLightReq struct {
 }
 
 var changeLight = make(chan changeLightReq)
+var rediscover = make(chan bool)
+
+func homeAssistantDiscoverer(client MQTT.Client) {
+	for {
+		select {
+		case <-rediscover:
+			fmt.Println("Publishing data to HA MQTT Discoverer")
+			updateHomeAssistantThermometers(client, config)
+			updateHomeAssistantButtons(client, config)
+			updateHomeAssistantLights(client, config)
+		}
+	}
+}
 
 func lightMonitor(client MQTT.Client) {
 	states := make(map[string]bool)
@@ -192,6 +205,12 @@ func onLight(client MQTT.Client, message MQTT.Message) {
 	}
 }
 
+func onHomeAssistantStarted(client MQTT.Client, message MQTT.Message) {
+	if string(message.Payload()) == "on" {
+		rediscover <- true
+	}
+}
+
 func onConfig(client MQTT.Client, message MQTT.Message) {
 	var newConfig Config
 	err := yaml.Unmarshal(message.Payload(), &newConfig)
@@ -200,14 +219,12 @@ func onConfig(client MQTT.Client, message MQTT.Message) {
 	}
 	fmt.Println("Got config update")
 
-	updateHomeAssistantThermometers(client, newConfig)
-	updateHomeAssistantButtons(client, newConfig)
-	updateHomeAssistantLights(client, newConfig)
 	updateThermometers(client, newConfig)
 	updateButtons(client, newConfig)
 	updateLights(client, newConfig)
 
 	config = newConfig
+	rediscover <- true
 }
 
 func handleThermometer(client MQTT.Client, topic string, values map[string]string) {
@@ -329,6 +346,9 @@ func main() {
 		if token := c.Subscribe("lights/+/command", 0, onLight); token.Wait() && token.Error() != nil {
 			panic(token.Error())
 		}
+		if token := c.Subscribe("homeassistant/started", 0, onHomeAssistantStarted); token.Wait() && token.Error() != nil {
+			panic(token.Error())
+		}
 	}
 
 	client := MQTT.NewClient(connOpts)
@@ -339,6 +359,7 @@ func main() {
 	}
 
 	go lightMonitor(client)
+	go homeAssistantDiscoverer(client)
 
 	for {
 		time.Sleep(1 * time.Second)
