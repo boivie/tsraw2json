@@ -20,17 +20,23 @@ import (
 
 type Config struct {
 	Thermometers []struct {
-		Name     string
-		Topic    string
-		Humidity bool
+		Name     string `json:"name"`
+		Topic    string `json:"topic"`
+		Humidity bool   `json:"-"`
+		Area     string `json:"area"`
+		Floor    string `json:"floor,omitempty"`
 	}
 	Buttons []struct {
-		Name  string
-		Topic string
+		Name  string `json:"name"`
+		Topic string `json:"topic"`
+		Area  string `json:"area"`
+		Floor string `json:"floor,omitempty"`
 	}
 	Lights []struct {
-		Name  string
-		Topic string
+		Name  string `json:"name"`
+		Topic string `json:"topic"`
+		Area  string `json:"area"`
+		Floor string `json:"floor,omitempty"`
 	}
 }
 
@@ -164,14 +170,18 @@ func updateHomeAssistantLights(client MQTT.Client, config Config) {
 	}
 }
 
+func makeKvString(labels map[string]string) string {
+	b, _ := json.Marshal(labels)
+	return string(b)
+}
+
 func updateThermometers(client MQTT.Client, config Config) {
 	for _, thermometer := range config.Thermometers {
 		slug := slug.Make(thermometer.Name)
-		client.Publish("thermometers/"+slug+"/name", 0, true, []byte(thermometer.Name))
-		client.Publish("thermometers/"+slug+"/unit", 0, true, []byte("celsius"))
+		s, _ := json.Marshal(thermometer)
+		client.Publish("thermometers/"+slug+"/config", 0, true, s)
 		if thermometer.Humidity {
-			client.Publish("hygrometers/"+slug+"/name", 0, true, []byte(thermometer.Name))
-			client.Publish("hygrometers/"+slug+"/unit", 0, true, []byte("percent"))
+			client.Publish("hygrometers/"+slug+"/config", 0, true, s)
 		}
 	}
 }
@@ -179,14 +189,18 @@ func updateThermometers(client MQTT.Client, config Config) {
 func updateButtons(client MQTT.Client, config Config) {
 	for _, button := range config.Buttons {
 		slug := slug.Make(button.Name)
+		s, _ := json.Marshal(button)
 		client.Publish("buttons/"+slug+"/name", 0, true, []byte(button.Name))
+		client.Publish("buttons/"+slug+"/config", 0, true, s)
 	}
 }
 
 func updateLights(client MQTT.Client, config Config) {
 	for _, light := range config.Lights {
 		slug := slug.Make(light.Name)
+		s, _ := json.Marshal(light)
 		client.Publish("lights/"+slug+"/name", 0, true, []byte(light.Name))
+		client.Publish("lights/"+slug+"/config", 0, true, s)
 	}
 }
 
