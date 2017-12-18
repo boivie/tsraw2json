@@ -32,6 +32,7 @@ type Config struct {
 		Topic string `json:"topic"`
 		Area  string `json:"area"`
 		Floor string `json:"floor,omitempty"`
+		Type  string `json:"type"`
 	}
 	Lights []struct {
 		Name  string `json:"name"`
@@ -50,8 +51,9 @@ type sensorInfo struct {
 }
 
 type binarySensorInfo struct {
-	Name       string `json:"name"`
-	StateTopic string `json:"state_topic"`
+	Name        string `json:"name"`
+	StateTopic  string `json:"state_topic"`
+	DeviceClass string `json:"device_class,omitempty"`
 }
 
 type lightInfo struct {
@@ -152,8 +154,9 @@ func updateHomeAssistantButtons(client MQTT.Client, config Config) {
 		slug := slug.Make(button.Name)
 		hassSlug := strings.Replace(slug, "-", "_", -1)
 		info := binarySensorInfo{
-			Name:       button.Name,
-			StateTopic: "buttons/" + slug + "/value",
+			Name:        button.Name,
+			StateTopic:  "buttons/" + slug + "/value",
+			DeviceClass: button.Type,
 		}
 		j, _ := json.Marshal(&info)
 		client.Publish("homeassistant/binary_sensor/"+hassSlug+"/config", 0, false, j)
