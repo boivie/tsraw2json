@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -64,6 +65,9 @@ type changeLightReq struct {
 	Value bool
 }
 
+const medianFilterSamples = 6
+
+var medianSamples = make(map[string][]float64)
 var changeLight = make(chan changeLightReq)
 var rediscover = make(chan bool)
 
@@ -241,13 +245,49 @@ func onConfig(client MQTT.Client, message MQTT.Message) {
 	rediscover <- true
 }
 
+func median(input []float64) float64 {
+	c := make([]float64, len(input))
+	copy(c, input)
+	sort.Float64s(c)
+
+	l := len(c)
+	var ret float64
+	if l%2 == 0 {
+		ret = 0.5 * (c[l/2-1] + c[l/2])
+	} else {
+		ret = c[l/2]
+	}
+
+	return ret
+}
+
+func medianFilterPublish(client MQTT.Client, topic string, value float64) {
+	new := append(medianSamples[topic], value)
+	if len(new) > medianFilterSamples {
+		new = new[len(new)-medianFilterSamples:]
+	}
+
+	if len(new) == medianFilterSamples {
+		value := median(new)
+		s := fmt.Sprint(value)
+		client.Publish(topic, 0, true, []byte(s))
+		fmt.Printf("<- %s = %v = %s\n", topic, new, s)
+	} else {
+		fmt.Printf("<- %s = %v = too few\n", topic, new)
+	}
+
+	medianSamples[topic] = new
+}
+
 func handleThermometer(client MQTT.Client, topic string, values map[string]string) {
 	for _, thermometer := range config.Thermometers {
 		if thermometer.Topic == topic {
 			slug := slug.Make(thermometer.Name)
-			client.Publish("thermometers/"+slug+"/value", 0, true, []byte(values["temp"]))
-			if thermometer.Humidity {
-				client.Publish("hygrometers/"+slug+"/value", 0, true, []byte(values["humidity"]))
+			if value, err := strconv.ParseFloat(values["temp"], 64); err == nil {
+				medianFilterPublish(client, "thermometers/"+slug+"/value", value)
+			}
+			if value, err := strconv.ParseFloat(values["humidity"], 64); err == nil {
+				medianFilterPublish(client, "hygrometers/"+slug+"/value", value)
 			}
 		}
 	}
@@ -258,9 +298,13 @@ func handleButtons(client MQTT.Client, topic string, values map[string]string) {
 		if button.Topic == topic {
 			slug := slug.Make(button.Name)
 			if values["method"] == "turnon" {
-				client.Publish("buttons/"+slug+"/value", 0, true, []byte("ON"))
+				topic := "buttons/" + slug + "/value"
+				client.Publish(topic, 0, true, []byte("ON"))
+				fmt.Printf("<- %s = ON\n", topic)
 			} else if values["method"] == "turnoff" {
-				client.Publish("buttons/"+slug+"/value", 0, true, []byte("OFF"))
+				topic := "buttons/" + slug + "/value"
+				client.Publish(topic, 0, true, []byte("OFF"))
+				fmt.Printf("<- %s = OFF\n", topic)
 			}
 		}
 	}
@@ -309,7 +353,7 @@ func handleRaw(client MQTT.Client, message MQTT.Message) {
 
 	payload, err := json.Marshal(values)
 	if err == nil {
-		fmt.Printf("Topic: %s, Payload: %s\n", topic, string(payload))
+		fmt.Printf("-> %s = %s\n", topic, string(payload))
 		if token := client.Publish(topic, byte(0), false, payload); token.Wait() && token.Error() != nil {
 			fmt.Printf("PUBLISH ERROR: %v", token.Error())
 		}
