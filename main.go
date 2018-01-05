@@ -67,7 +67,7 @@ type changeLightReq struct {
 	Value bool
 }
 
-const medianFilterSamples = 6
+const medianFilterSamples = 9
 
 var medianSamples = make(map[string][]float64)
 var changeLight = make(chan changeLightReq)
