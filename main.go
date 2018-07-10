@@ -143,7 +143,7 @@ func influxdbReporter(address, username, password string) {
 			"value": v.value,
 		}
 
-		fmt.Printf("Influx <- %s = %s\n", v.entity, fmt.Sprintf("%f", v.value))
+		fmt.Printf("Influx <- %s = %s\n", v.entity, strconv.FormatFloat(v.value, 'f', -1, 64))
 		pt, err := influxdb.NewPoint(v.entity, tags, fields, time.Now())
 		if err != nil {
 			log.Fatal(err)
@@ -651,7 +651,7 @@ var i int64
 func sensorReporter(client MQTT.Client) {
 	for v := range sensor2MQTTchan {
 		topic := "sensors/" + slug.Make(v.sensor.Name) + "/" + v.entity
-		publish(client, topic, true, []byte(strconv.FormatFloat(v.value, 'f', 6, 64)))
+		publish(client, topic, true, []byte(strconv.FormatFloat(v.value, 'f', -1, 64)))
 	}
 }
 
