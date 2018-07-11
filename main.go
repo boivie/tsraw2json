@@ -476,6 +476,45 @@ func handleRawTellstick(client MQTT.Client, message MQTT.Message) {
 	}
 }
 
+func handleRawSPC(client MQTT.Client, message MQTT.Message) {
+	fmt.Printf("-> %s = %s\n", message.Topic(), string(message.Payload()))
+	var data struct {
+		UpdateTime int64  `json:"update_time"`
+		Status     string `json:"status"`
+	}
+	json.Unmarshal(message.Payload(), &data)
+	parts := strings.Split(message.Topic(), "/")
+
+	findSensor := func(entityID string) *Sensor {
+		for _, sensor := range config.Sensors {
+			if sensor.Protocol == "SPC" {
+				for _, entity := range sensor.Entities {
+					if entity.ID == entityID {
+						return &sensor
+					}
+				}
+			}
+		}
+		return nil
+	}
+
+	if sensor := findSensor(parts[1]); sensor != nil {
+		if sensor.Typ == "pir" {
+			if data.Status == "open" {
+				publishSensor(sensor, "presence", 1)
+			} else if data.Status == "closed" {
+				publishSensor(sensor, "presence", 0)
+			}
+		} else if sensor.Typ == "door-switch" {
+			if data.Status == "open" {
+				publishSensor(sensor, "open", 1)
+			} else if data.Status == "closed" {
+				publishSensor(sensor, "open", 0)
+			}
+		}
+	}
+}
+
 func publish(client MQTT.Client, topic string, retained bool, payload []byte) {
 	fmt.Printf("<- %s = %s\n", topic, string(payload))
 	if token := client.Publish(topic, 0, retained, payload); token.Wait() && token.Error() != nil {
@@ -703,6 +742,9 @@ func main() {
 			panic(token.Error())
 		}
 		if token := c.Subscribe("homeassistant/started", 0, onHomeAssistantStarted); token.Wait() && token.Error() != nil {
+			panic(token.Error())
+		}
+		if token := c.Subscribe("SPC/#", 0, handleRawSPC); token.Wait() && token.Error() != nil {
 			panic(token.Error())
 		}
 	}
