@@ -324,6 +324,13 @@ func onHomeAssistantStarted(client MQTT.Client, message MQTT.Message) {
 	}
 }
 
+var allowedTypes = map[string]bool{
+	"pir":          true,
+	"door-sensor":  true,
+	"thermometer":  true,
+	"flood-sensor": true,
+}
+
 func readConfig(filename string) error {
 	log.Printf("Reading config from %s\n", filename)
 	contents, err := ioutil.ReadFile(filename)
@@ -336,9 +343,12 @@ func readConfig(filename string) error {
 		log.Printf("Error parsing config: %v", err)
 		return err
 	}
-	fmt.Printf("Sensors:\n")
+	fmt.Printf("Found Sensors:\n")
 	for _, sensor := range config.Sensors {
-		fmt.Printf(" - %s (%s::%s)\n", sensor.Name, sensor.Protocol, sensor.Model)
+		fmt.Printf(" - %s (%s::%s::%s)\n", sensor.Name, sensor.Protocol, sensor.Typ, sensor.Model)
+		if _, found := allowedTypes[sensor.Typ]; !found {
+			panic("Invalid type")
+		}
 	}
 
 	return nil
@@ -467,7 +477,6 @@ func handleRawTellstick(client MQTT.Client, message MQTT.Message) {
 	if values["class"] == "sensor" && values["protocol"] == "fineoffset" && values["model"] == "temperaturehumidity" {
 		id := values["id"]
 		if sensor, _, found := findSensor("temperaturehumidity", id); found {
-			fmt.Printf("Found sensor: %v\n", sensor)
 			if f, err := strconv.ParseFloat(values["temp"], 64); err == nil {
 				publishSensor(&sensor, "temperature", f)
 			}
