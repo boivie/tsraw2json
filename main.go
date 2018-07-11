@@ -40,6 +40,7 @@ type Sensor struct {
 	Name     string            `json:"name"`
 	Protocol string            `json:"protocol"`
 	Model    string            `json:"model"`
+	Typ      string            `json:"type"`
 	Entities []SensorEntity    `json:"entities"`
 	Labels   map[string]string `json:"labels"`
 }
@@ -135,6 +136,7 @@ func influxdbReporter(address, username, password string) {
 		tags := make(map[string]string)
 		tags["protocol"] = v.sensor.Protocol
 		tags["model"] = v.sensor.Model
+		tags["type"] = v.sensor.Typ
 		tags["name"] = slug.Make(v.sensor.Name)
 		for k, v := range v.sensor.Labels {
 			tags[k] = v
