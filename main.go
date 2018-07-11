@@ -40,7 +40,7 @@ type Sensor struct {
 	Name     string            `json:"name"`
 	Protocol string            `json:"protocol"`
 	Model    string            `json:"model"`
-	Typ      string            `json:"type"`
+	Type     string            `json:"type"`
 	Entities []SensorEntity    `json:"entities"`
 	Labels   map[string]string `json:"labels"`
 }
@@ -136,7 +136,7 @@ func influxdbReporter(address, username, password string) {
 		tags := make(map[string]string)
 		tags["protocol"] = v.sensor.Protocol
 		tags["model"] = v.sensor.Model
-		tags["type"] = v.sensor.Typ
+		tags["type"] = v.sensor.Type
 		tags["name"] = slug.Make(v.sensor.Name)
 		for k, v := range v.sensor.Labels {
 			tags[k] = v
@@ -345,8 +345,8 @@ func readConfig(filename string) error {
 	}
 	fmt.Printf("Found Sensors:\n")
 	for _, sensor := range config.Sensors {
-		fmt.Printf(" - %s (%s::%s::%s)\n", sensor.Name, sensor.Protocol, sensor.Typ, sensor.Model)
-		if _, found := allowedTypes[sensor.Typ]; !found {
+		fmt.Printf(" - %s (%s::%s::%s)\n", sensor.Name, sensor.Protocol, sensor.Type, sensor.Model)
+		if _, found := allowedTypes[sensor.Type]; !found {
 			panic("Invalid type")
 		}
 	}
@@ -510,13 +510,13 @@ func handleRawSPC(client MQTT.Client, message MQTT.Message) {
 	}
 
 	if sensor := findSensor(parts[1]); sensor != nil {
-		if sensor.Typ == "pir" {
+		if sensor.Type == "pir" {
 			if data.Status == "open" {
 				publishSensor(sensor, "presence", 1)
 			} else if data.Status == "closed" {
 				publishSensor(sensor, "presence", 0)
 			}
-		} else if sensor.Typ == "door-switch" {
+		} else if sensor.Type == "door-switch" {
 			if data.Status == "open" {
 				publishSensor(sensor, "open", 1)
 			} else if data.Status == "closed" {
@@ -722,7 +722,7 @@ func sensorReporter(client MQTT.Client) {
 			id,
 			v.sensor.Name,
 			v.sensor.Protocol,
-			v.sensor.Typ,
+			v.sensor.Type,
 			v.sensor.Model,
 			v.sensor.Labels,
 			v.entity,
