@@ -703,8 +703,35 @@ var i int64
 
 func sensorReporter(client MQTT.Client) {
 	for v := range sensor2MQTTchan {
-		topic := "sensors/" + slug.Make(v.sensor.Name) + "/" + v.entity
-		publish(client, topic, true, []byte(strconv.FormatFloat(v.value, 'f', -1, 64)))
+		// Simple, only value
+		id := slug.Make(v.sensor.Name)
+		value := []byte(strconv.FormatFloat(v.value, 'f', -1, 64))
+		publish(client, "sensors/"+id+"/"+v.entity, true, value)
+
+		// Complex, all parameters and fields
+		event := struct {
+			ID       string            `json:"id"`
+			Name     string            `json:"name"`
+			Protocol string            `json:"protocol"`
+			Type     string            `json:"type"`
+			Model    string            `json:"model"`
+			Labels   map[string]string `json:"labels"`
+			Entity   string            `json:"entity"`
+			Value    float64           `json:"value"`
+		}{
+			id,
+			v.sensor.Name,
+			v.sensor.Protocol,
+			v.sensor.Typ,
+			v.sensor.Model,
+			v.sensor.Labels,
+			v.entity,
+			v.value,
+		}
+		b, err := json.Marshal(&event)
+		if err == nil {
+			publish(client, "sensors/"+id+"/measurement", false, b)
+		}
 	}
 }
 
