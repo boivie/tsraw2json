@@ -577,9 +577,10 @@ func handleAqaraMotion(client MQTT.Client, sensor Sensor, entity SensorEntity, m
 		if battery, ok := msg.Config["battery"].(float64); ok {
 			publishSensor(&sensor, "battery", battery)
 		}
-		if temperature, ok := msg.Config["temperature"].(float64); ok {
-			publishSensor(&sensor, "temperature", temperature/100.0)
-		}
+		// The temperature is not very reliable. Skipping.
+		// if temperature, ok := msg.Config["temperature"].(float64); ok {
+		// 	publishSensor(&sensor, "temperature", temperature/100.0)
+		// }
 	}
 }
 
@@ -612,9 +613,10 @@ func handleAqaraFlood(client MQTT.Client, sensor Sensor, entity SensorEntity, ms
 		if battery, ok := msg.Config["battery"].(float64); ok {
 			publishSensor(&sensor, "battery", battery)
 		}
-		if temperature, ok := msg.Config["temperature"].(float64); ok {
-			publishSensor(&sensor, "temperature", temperature/100.0)
-		}
+		// The temperature is not very reliable. Skipping.
+		// if temperature, ok := msg.Config["temperature"].(float64); ok {
+		// 	publishSensor(&sensor, "temperature", temperature/100.0)
+		// }
 	}
 }
 func handleAqaraButton(client MQTT.Client, sensor Sensor, entity SensorEntity, msg DeconzMessage) {
@@ -642,9 +644,10 @@ func handleAqaraButton(client MQTT.Client, sensor Sensor, entity SensorEntity, m
 		if battery, ok := msg.Config["battery"].(float64); ok {
 			publishSensor(&sensor, "battery", battery)
 		}
-		if temperature, ok := msg.Config["temperature"].(float64); ok {
-			publishSensor(&sensor, "temperature", temperature/100.0)
-		}
+		// The temperature is not very reliable. Skipping.
+		// if temperature, ok := msg.Config["temperature"].(float64); ok {
+		// 	publishSensor(&sensor, "temperature", temperature/100.0)
+		// }
 	}
 }
 
