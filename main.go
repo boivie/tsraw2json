@@ -84,8 +84,8 @@ type changeLightReq struct {
 
 type sensorValue struct {
 	sensor *Sensor
-	entity string
-	value  float64
+	values map[string]float64
+	events map[string]string
 }
 
 const medianFilterSamples = 9
@@ -133,24 +133,56 @@ func influxdbReporter(address, username, password string) {
 			log.Fatal(err)
 		}
 
-		tags := make(map[string]string)
-		tags["protocol"] = v.sensor.Protocol
-		tags["model"] = v.sensor.Model
-		tags["type"] = v.sensor.Type
-		tags["name"] = slug.Make(v.sensor.Name)
-		for k, v := range v.sensor.Labels {
-			tags[k] = v
-		}
-		fields := map[string]interface{}{
-			"value": v.value,
+		addMetric := func(measurement string, fields map[string]interface{}) {
+			tags := make(map[string]string)
+			tags["protocol"] = v.sensor.Protocol
+			tags["model"] = v.sensor.Model
+			tags["type"] = v.sensor.Type
+			tags["name"] = slug.Make(v.sensor.Name)
+			for k, v := range v.sensor.Labels {
+				tags[k] = v
+			}
+
+			pt, err := influxdb.NewPoint(measurement, tags, fields, time.Now())
+			if err != nil {
+				log.Fatal(err)
+			}
+			bp.AddPoint(pt)
 		}
 
-		fmt.Printf("Influx <- %s = %s\n", v.entity, strconv.FormatFloat(v.value, 'f', -1, 64))
-		pt, err := influxdb.NewPoint(v.entity, tags, fields, time.Now())
-		if err != nil {
-			log.Fatal(err)
+		if battery, ok := v.values["battery"]; ok {
+			addMetric("battery", map[string]interface{}{"battery": battery})
 		}
-		bp.AddPoint(pt)
+		if presence, ok := v.values["presence"]; ok {
+			addMetric("presence", map[string]interface{}{"presence": presence})
+		}
+		if open, ok := v.values["open"]; ok {
+			addMetric("open", map[string]interface{}{"open": open})
+		}
+		if temperature, ok := v.values["temperature"]; ok {
+			fields := make(map[string]interface{})
+			fields["temperature"] = temperature
+			if humidity, ok := v.values["humidity"]; ok {
+				fields["humidity"] = humidity
+			}
+			if pressure, ok := v.values["pressure"]; ok {
+				fields["pressure"] = pressure
+			}
+
+			addMetric("thermometer", fields)
+		}
+		if lux, ok := v.values["lux"]; ok {
+			fields := make(map[string]interface{})
+			fields["lux"] = lux
+			if lightlevel, ok := v.values["lightlevel"]; ok {
+				fields["lightlevel"] = lightlevel
+			}
+			if dark, ok := v.values["dark"]; ok {
+				fields["dark"] = dark
+			}
+
+			addMetric("light", fields)
+		}
 
 		if err := c.Write(bp); err != nil {
 			log.Fatal(err)
@@ -326,8 +358,9 @@ func onHomeAssistantStarted(client MQTT.Client, message MQTT.Message) {
 
 var allowedTypes = map[string]bool{
 	"pir":          true,
-	"door-sensor":  true,
+	"door-switch":  true,
 	"thermometer":  true,
+	"button":       true,
 	"flood-sensor": true,
 }
 
@@ -437,52 +470,53 @@ func sendParsedTellstick(client MQTT.Client, values map[string]string) {
 
 func handleRawTellstick(client MQTT.Client, message MQTT.Message) {
 	fmt.Printf("-> %s = %s\n", message.Topic(), string(message.Payload()))
-	values := make(map[string]string)
+	fields := make(map[string]string)
 	for _, kvpair := range strings.Split(string(message.Payload()), ";") {
 		kv := strings.SplitN(kvpair, ":", 2)
 		if len(kv) == 2 {
-			values[kv[0]] = kv[1]
+			fields[kv[0]] = kv[1]
 		}
 	}
 
-	sendParsedTellstick(client, values)
+	sendParsedTellstick(client, fields)
 
-	findSensor := func(typ, entityID string) (Sensor, SensorEntity, bool) {
+	findSensor := func(typ, entityID string) (*Sensor, SensorEntity, bool) {
 		for _, sensor := range config.Sensors {
 			if sensor.Protocol == "tellstick" && sensor.Model == typ {
 				for _, entity := range sensor.Entities {
 					if entity.ID == entityID {
-						return sensor, entity, true
+						return &sensor, entity, true
 					}
 				}
 			}
 		}
-		return Sensor{}, SensorEntity{}, false
+		return nil, SensorEntity{}, false
 	}
 
 	// tellstick/selflearning
-	if values["class"] == "sensor" && values["protocol"] == "arctech" && values["model"] == "selflearning" {
-		id := values["house"] + "/" + values["unit"]
+	if fields["class"] == "command" && fields["protocol"] == "arctech" && fields["model"] == "selflearning" {
+		id := fields["house"] + "/" + fields["unit"]
 		if sensor, entity, found := findSensor("selflearning", id); found {
-			slug := slug.Make(sensor.Name)
-			if values["method"] == "turnon" {
-				publishString(client, "sensors/"+slug+"/"+entity.Name, false, "1")
-			} else if values["method"] == "turnoff" {
-				publishString(client, "sensors/"+slug+"/"+entity.Name, false, "0")
+			if fields["method"] == "turnon" {
+				onSensor(sensor, map[string]float64{entity.Name: 1}, nil)
+			} else if fields["method"] == "turnoff" {
+				onSensor(sensor, map[string]float64{entity.Name: 0}, nil)
 			}
 		}
 	}
 
 	// tellstick/temperaturehumidity
-	if values["class"] == "sensor" && values["protocol"] == "fineoffset" && values["model"] == "temperaturehumidity" {
-		id := values["id"]
+	if fields["class"] == "sensor" && fields["protocol"] == "fineoffset" && fields["model"] == "temperaturehumidity" {
+		id := fields["id"]
 		if sensor, _, found := findSensor("temperaturehumidity", id); found {
-			if f, err := strconv.ParseFloat(values["temp"], 64); err == nil {
-				publishSensor(&sensor, "temperature", f)
-			}
-			if f, err := strconv.ParseFloat(values["humidity"], 64); err == nil {
-				publishSensor(&sensor, "humidity", f)
-			}
+			values := make(map[string]float64)
+
+			temperature, _ := strconv.ParseFloat(fields["temp"], 64)
+			humidity, _ := strconv.ParseFloat(fields["humidity"], 64)
+
+			values["temperature"] = temperature
+			values["humidity"] = humidity
+			onSensor(sensor, values, nil)
 		}
 	}
 }
@@ -510,19 +544,21 @@ func handleRawSPC(client MQTT.Client, message MQTT.Message) {
 	}
 
 	if sensor := findSensor(parts[1]); sensor != nil {
+		values := make(map[string]float64)
 		if sensor.Type == "pir" {
 			if data.Status == "open" {
-				publishSensor(sensor, "presence", 1)
+				values["presence"] = 1
 			} else if data.Status == "closed" {
-				publishSensor(sensor, "presence", 0)
+				values["presence"] = 0
 			}
 		} else if sensor.Type == "door-switch" {
 			if data.Status == "open" {
-				publishSensor(sensor, "open", 1)
+				values["open"] = 1
 			} else if data.Status == "closed" {
-				publishSensor(sensor, "open", 0)
+				values["open"] = 0
 			}
 		}
+		onSensor(sensor, values, nil)
 	}
 }
 
@@ -567,99 +603,113 @@ func bool2int(b bool) int {
 	return 0
 }
 
-func publishSensor(sensor *Sensor, entity string, v float64) {
-	sensor2MQTTchan <- sensorValue{sensor, entity, v}
-	sensor2Influxchan <- sensorValue{sensor, entity, v}
+func b2f(b bool) float64 {
+	if b {
+		return 1.0
+	}
+	return 0.0
 }
 
-func handleAqaraMotion(client MQTT.Client, sensor Sensor, entity SensorEntity, msg DeconzMessage) {
+func onSensor(sensor *Sensor, values map[string]float64, events map[string]string) {
+	sensor2MQTTchan <- sensorValue{sensor, values, events}
+	sensor2Influxchan <- sensorValue{sensor, values, events}
+}
+
+func handleAqaraMotion(client MQTT.Client, sensor *Sensor, entity SensorEntity, msg DeconzMessage) {
+	values := make(map[string]float64)
 	if msg.State != nil {
 		if presence, ok := msg.State["presence"].(bool); ok {
-			publishSensor(&sensor, "presence", float64(bool2int(presence)))
+			values["presence"] = float64(bool2int(presence))
 		}
 		if lux, ok := msg.State["lux"].(float64); ok {
-			publishSensor(&sensor, "lux", lux)
+			values["lux"] = lux
 		}
+
 		if lightLevel, ok := msg.State["lightlevel"].(float64); ok {
-			publishSensor(&sensor, "lightlevel", lightLevel)
+			values["lightlevel"] = lightLevel
+		}
+
+		if dark, ok := msg.State["dark"].(bool); ok {
+			values["dark"] = b2f(dark)
 		}
 	}
 	if msg.Config != nil {
 		if battery, ok := msg.Config["battery"].(float64); ok {
-			publishSensor(&sensor, "battery", battery)
+			values["battery"] = battery
 		}
-		// The temperature is not very reliable. Skipping.
-		// if temperature, ok := msg.Config["temperature"].(float64); ok {
-		// 	publishSensor(&sensor, "temperature", temperature/100.0)
-		// }
+		if temperature, ok := msg.Config["temperature"].(float64); ok {
+			values["temperature"] = temperature / 100.0
+		}
 	}
+
+	onSensor(sensor, values, nil)
 }
 
-func handleAqaraThermometer(client MQTT.Client, sensor Sensor, entity SensorEntity, msg DeconzMessage) {
+func handleAqaraThermometer(client MQTT.Client, sensor *Sensor, entity SensorEntity, msg DeconzMessage) {
+	values := make(map[string]float64)
 	if msg.State != nil {
 		if temperature, ok := msg.State["temperature"].(float64); ok {
-			publishSensor(&sensor, "temperature", temperature/100.0)
+			values["temperature"] = temperature / 100.0
 		}
 		if pressure, ok := msg.State["pressure"].(float64); ok {
-			publishSensor(&sensor, "pressure", pressure/10.0)
+			values["pressure"] = pressure / 10.0
 		}
 		if humidity, ok := msg.State["humidity"].(float64); ok {
-			publishSensor(&sensor, "humidity", humidity/100.0)
+			values["humidity"] = humidity / 100.0
 		}
 	}
 	if msg.Config != nil {
 		if battery, ok := msg.Config["battery"].(float64); ok {
-			publishSensor(&sensor, "battery", battery)
+			values["battery"] = battery
 		}
 	}
+	onSensor(sensor, values, nil)
 }
 
-func handleAqaraFlood(client MQTT.Client, sensor Sensor, entity SensorEntity, msg DeconzMessage) {
+func handleAqaraFlood(client MQTT.Client, sensor *Sensor, entity SensorEntity, msg DeconzMessage) {
+	values := make(map[string]float64)
 	if msg.State != nil {
 		if water, ok := msg.State["water"].(bool); ok {
-			publishSensor(&sensor, "water", float64(bool2int(water)))
+			values["water"] = float64(bool2int(water))
 		}
 	}
 	if msg.Config != nil {
 		if battery, ok := msg.Config["battery"].(float64); ok {
-			publishSensor(&sensor, "battery", battery)
+			values["battery"] = battery
 		}
-		// The temperature is not very reliable. Skipping.
-		// if temperature, ok := msg.Config["temperature"].(float64); ok {
-		// 	publishSensor(&sensor, "temperature", temperature/100.0)
-		// }
+		if temperature, ok := msg.Config["temperature"].(float64); ok {
+			values["temperature"] = temperature / 100.0
+		}
 	}
+	onSensor(sensor, values, nil)
 }
-func handleAqaraButton(client MQTT.Client, sensor Sensor, entity SensorEntity, msg DeconzMessage) {
-	topic := "sensors/" + slug.Make(sensor.Name)
+func handleAqaraButton(client MQTT.Client, sensor *Sensor, entity SensorEntity, msg DeconzMessage) {
+	values := make(map[string]float64)
+	events := make(map[string]string)
 	if msg.State != nil {
 		if code, ok := msg.State["buttonevent"].(float64); ok {
-			event := ""
 			if code == 1001 {
-				event = "long_press"
+				events["button"] = "long-press"
 			} else if code == 1002 {
-				event = "click"
+				events["button"] = "click"
 			} else if code == 1003 {
-				event = "long_release"
+				events["button"] = "long-release"
 			} else if code == 1004 {
-				event = "double-click"
+				events["button"] = "double-click"
 			} else if code == 1007 {
-				event = "motion"
-			}
-			if event != "" {
-				publishString(client, topic+"/event", false, event)
+				events["button"] = "motion"
 			}
 		}
 	}
 	if msg.Config != nil {
 		if battery, ok := msg.Config["battery"].(float64); ok {
-			publishSensor(&sensor, "battery", battery)
+			values["battery"] = battery
 		}
-		// The temperature is not very reliable. Skipping.
-		// if temperature, ok := msg.Config["temperature"].(float64); ok {
-		// 	publishSensor(&sensor, "temperature", temperature/100.0)
-		// }
+		if temperature, ok := msg.Config["temperature"].(float64); ok {
+			values["temperature"] = temperature / 100.0
+		}
 	}
+	onSensor(sensor, values, events)
 }
 
 func handleRawDeconz(client MQTT.Client, message MQTT.Message) {
@@ -673,17 +723,17 @@ func handleRawDeconz(client MQTT.Client, message MQTT.Message) {
 
 	sendParsedDeconz(client, msg)
 
-	findSensor := func(id string) (Sensor, SensorEntity, bool) {
+	findSensor := func(id string) (*Sensor, SensorEntity, bool) {
 		for _, sensor := range config.Sensors {
 			if sensor.Protocol == "zigbee" {
 				for _, entity := range sensor.Entities {
 					if entity.ID == id {
-						return sensor, entity, true
+						return &sensor, entity, true
 					}
 				}
 			}
 		}
-		return Sensor{}, SensorEntity{}, false
+		return nil, SensorEntity{}, false
 	}
 
 	if sensor, entity, found := findSensor(msg.ID); found {
@@ -703,21 +753,27 @@ var i int64
 
 func sensorReporter(client MQTT.Client) {
 	for v := range sensor2MQTTchan {
-		// Simple, only value
 		id := slug.Make(v.sensor.Name)
-		value := []byte(strconv.FormatFloat(v.value, 'f', -1, 64))
-		publish(client, "sensors/"+id+"/"+v.entity, true, value)
 
+		// Events
+		for k, v := range v.events {
+			publish(client, "sensors/"+id+"/"+k, false, []byte(v))
+		}
+		// Values
+		for k, v := range v.values {
+			publish(client, "sensors/"+id+"/"+k, true, []byte(strconv.FormatFloat(v, 'f', -1, 64)))
+		}
 		// Complex, all parameters and fields
 		event := struct {
-			ID       string            `json:"id"`
-			Name     string            `json:"name"`
-			Protocol string            `json:"protocol"`
-			Type     string            `json:"type"`
-			Model    string            `json:"model"`
-			Labels   map[string]string `json:"labels"`
-			Entity   string            `json:"entity"`
-			Value    float64           `json:"value"`
+			ID        string             `json:"id"`
+			Name      string             `json:"name"`
+			Protocol  string             `json:"protocol"`
+			Type      string             `json:"type"`
+			Model     string             `json:"model"`
+			Labels    map[string]string  `json:"labels"`
+			Timestamp int64              `json:"timestamp"`
+			Events    map[string]string  `json:"events"`
+			Values    map[string]float64 `json:"values"`
 		}{
 			id,
 			v.sensor.Name,
@@ -725,8 +781,9 @@ func sensorReporter(client MQTT.Client) {
 			v.sensor.Type,
 			v.sensor.Model,
 			v.sensor.Labels,
-			v.entity,
-			v.value,
+			time.Now().UnixNano() / 1e6,
+			v.events,
+			v.values,
 		}
 		b, err := json.Marshal(&event)
 		if err == nil {
